@@ -31,11 +31,30 @@ function App() {
   const [inputText, setInputText] = useState('');
   const [hasConsent, setHasConsent] = useState(null); // null checking
 
+<<<<<<< Updated upstream
+=======
+  // Web Agent States
+  const [isAgentActive, setIsAgentActive] = useState(false);
+  const [agentTask, setAgentTask] = useState('');
+  const [agentHistory, setAgentHistory] = useState([]);
+  const [agentLog, setAgentLog] = useState('');
+
+  const [spokenText, setSpokenText] = useState('');
+
+>>>>>>> Stashed changes
   const chatHistoryRef = useRef(null);
   const langRef = useRef(null);
   const intentRef = useRef(null);
   const fileInputRef = useRef(null);
   const timerIntervalRef = useRef(null);
+  const abortControllerRef = useRef(null);
+
+  // Sync spoken text with TTS state
+  useEffect(() => {
+    if (!tts.isPlaying) {
+      setSpokenText('');
+    }
+  }, [tts.isPlaying]);
   // Refs to avoid stale closures in async callbacks
   const sessionsRef = useRef([]);
   const currentSessionIdRef = useRef(null);
@@ -720,6 +739,30 @@ function App() {
     return '';
   };
 
+  const handleCancelGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({ action: 'ABORT_QUERY' });
+    }
+
+    updateUIState('Idle', 'Ready');
+    stopTimer();
+
+    const activeS = getActiveSession();
+    if (activeS) {
+      activeS.messages.push({
+        role: 'assistant',
+        content: '⚠️ Generation cancelled by user.'
+      });
+      const updated = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? activeS : s);
+      saveSessionsToStorage(updated, currentSessionIdRef.current);
+    }
+  };
+
   // SEND MESSAGE (FREEFORM QA)
   const handleSend = (textToSend = '') => {
     const queryStr = (typeof textToSend === 'string' && textToSend.trim()) ? textToSend : inputText;
@@ -739,12 +782,15 @@ function App() {
 
     active.messages.push({ role: 'user', content: query });
     active.activeIntent = 'FREEFORM_QA'; // Switch to Chat mode
-    // Use sessionsRef to avoid stale closure
     const updatedWithUser = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? active : s);
     saveSessionsToStorage(updatedWithUser, currentSessionIdRef.current);
 
     updateUIState('Thinking', 'Thinking...');
     startTimer();
+
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
 
     const payload = {
       pageContent: active.pageContent,
@@ -796,7 +842,8 @@ function App() {
       fetch(`${BACKEND_URL}/api/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: signal
       })
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -1148,15 +1195,52 @@ function App() {
                     <div key={index} className={`mac-msg-row ${msg.role}`}>
                       <div className="mac-msg-bubble">
                         {msg.content}
-                        {msg.role === 'assistant' && (
-                          <button
-                            onClick={() => tts.speak(msg.content.replace(/[#*`_]/g, ''), getLangCode(activeSession.targetLanguage))}
-                            className="mac-bubble-speaker"
-                            title="Read aloud"
-                          >
-                            🔊
-                          </button>
-                        )}
+                        {msg.role === 'assistant' && (() => {
+                          const cleanText = msg.content.replace(/[#*`_]/g, '');
+                          const isThisSpoken = spokenText === cleanText;
+                          
+                          let btnIcon = '🔊';
+                          let btnTitle = 'Read aloud';
+                          let handleBubbleSpeakerClick = () => {
+                            tts.stop();
+                            setSpokenText(cleanText);
+                            tts.speak(cleanText, getLangCode(activeSession.targetLanguage));
+                          };
+
+                          if (isThisSpoken && tts.isPlaying) {
+                            if (tts.isPaused) {
+                              btnIcon = '▶';
+                              btnTitle = 'Resume speech';
+                              handleBubbleSpeakerClick = () => tts.resume();
+                            } else {
+                              btnIcon = '⏸';
+                              btnTitle = 'Pause speech';
+                              handleBubbleSpeakerClick = () => tts.pause();
+                            }
+                          }
+
+                          return (
+                            <div style={{ display: 'inline-flex', gap: '4px', verticalAlign: 'middle' }}>
+                              <button
+                                onClick={handleBubbleSpeakerClick}
+                                className="mac-bubble-speaker"
+                                title={btnTitle}
+                              >
+                                {btnIcon}
+                              </button>
+                              {isThisSpoken && tts.isPlaying && (
+                                <button
+                                  onClick={() => tts.stop()}
+                                  className="mac-bubble-speaker"
+                                  title="Stop speech"
+                                  style={{ color: '#ef4444' }}
+                                >
+                                  ⏹
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -1205,9 +1289,20 @@ function App() {
                   </svg>
                 </button>
               )}
-              <button className="mac-btn-send" onClick={handleSend}>
-                Send
-              </button>
+              {uiState === 'Thinking' ? (
+                <button 
+                  className="mac-btn-send" 
+                  onClick={handleCancelGeneration} 
+                  style={{ background: '#ef4444', color: '#ffffff' }} 
+                  title="Stop generating"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button className="mac-btn-send" onClick={handleSend}>
+                  Send
+                </button>
+              )}
             </div>
           </div>
         </div>
