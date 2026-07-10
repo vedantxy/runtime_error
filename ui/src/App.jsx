@@ -13,6 +13,7 @@ function App() {
   const [isLangOpen, setIsLangOpen] = useState(false);
   const [isIntentOpen, setIsIntentOpen] = useState(false);
   const [isSidebarActive, setIsSidebarActive] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('chat'); // chat | archive | models
@@ -43,16 +44,7 @@ function App() {
   const tts = useSpeechSynthesis();
   const stt = useSpeechRecognition();
 
-  // Responsive state - Sidebar is active only in full webpage dashboard views (width > 900px)
-  const [isWebMode, setIsWebMode] = useState(window.innerWidth > 900);
 
-  useEffect(() => {
-    const handleResize = () => {
-      setIsWebMode(window.innerWidth > 900);
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   // Helper to map language names to language codes
   const getLangCode = (langName) => {
@@ -223,19 +215,17 @@ function App() {
     }
   }, []);
 
-  // Auto-extract page content on mount if in extension mode and session has no content yet
+  // Auto-extract page content on mount if session has no content yet
   useEffect(() => {
-    if (!isWebMode) {
-      const timer = setTimeout(() => {
-        const active = getActiveSession();
-        if (active && !active.pageContent) {
-          console.log('[Auto-Extract] Triggering automatic page extraction on mount...');
-          handleExtract();
-        }
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [isWebMode, currentSessionId]);
+    const timer = setTimeout(() => {
+      const active = getActiveSession();
+      if (active && !active.pageContent) {
+        console.log('[Auto-Extract] Triggering automatic page extraction on mount...');
+        handleExtract();
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [currentSessionId]);
 
   // Save consent
   const handleAcceptConsent = () => {
@@ -891,6 +881,30 @@ function App() {
     }
   };
 
+  // Close floating window or extension panel
+  const handleClose = () => {
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'COMPANION_CLOSE' }, '*');
+    } else {
+      window.close();
+    }
+  };
+
+  // Drag handler for the floating window titlebar
+  const handleTitlebarPointerDown = (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('.mac-circle') || e.target.closest('.mac-icon-btn') || e.target.closest('button') || e.target.closest('select')) return;
+
+    e.preventDefault();
+    if (window.parent !== window) {
+      window.parent.postMessage({ 
+        type: 'COMPANION_DRAG_START', 
+        screenX: e.screenX, 
+        screenY: e.screenY 
+      }, '*');
+    }
+  };
+
   // Parse lines to display as bullet points (for Summarize/Explain/Example)
   const getRenderContent = () => {
     const active = getActiveSession();
@@ -984,1042 +998,160 @@ function App() {
 
   if (hasConsent === null) return null;
 
-  if (!isWebMode) {
-    return (
-      <div className="botpenguin-container">
-        {/* Blue Header */}
-        <header className="bp-header">
-          <div className="bp-header-left">
-            <span className="bp-logo">🐧</span>
-            <span className="bp-title">AI Companion</span>
-            <span 
-              className="bp-badge" 
-              onClick={() => setShowModelHub(!showModelHub)}
-              style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
-              title="Click to view Model Hub"
-            >
-              {activeModel} ▾
-            </span>
-          </div>
-          <div className="bp-header-right">
-            {/* 🌐 Language Selector */}
-            <div style={{ position: 'relative', display: 'inline-block', ref: langRef }}>
-              <button 
-                className="bp-header-btn" 
-                title="Select Language" 
-                onClick={() => setIsLangOpen(!isLangOpen)}
-                style={{ marginRight: '6px', fontSize: '13px' }}
-              >
-                🌐
-              </button>
-              {isLangOpen && (
-                <div style={{
-                  position: 'absolute',
-                  top: '28px',
-                  right: 0,
-                  backgroundColor: '#ffffff',
-                  border: '1px solid #cbd5e1',
-                  borderRadius: '6px',
-                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                  zIndex: 300,
-                  width: '140px',
-                  maxHeight: '200px',
-                  overflowY: 'auto',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  padding: '4px 0'
-                }}>
-                  {['English (US)', 'English (UK)', 'Hindi', 'Bengali', 'Tamil', 'Telugu', 'Marathi', 'Gujarati', 'Kannada', 'Malayalam', 'Punjabi', 'Odia', 'Urdu', 'Sanskrit'].map(lang => (
-                    <div 
-                      key={lang} 
-                      onClick={() => {
-                        if (activeSession) {
-                          activeSession.targetLanguage = lang;
-                          saveSessionsToStorage(sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? activeSession : s), currentSessionIdRef.current);
-                        }
-                        setIsLangOpen(false);
-                      }}
-                      style={{
-                        padding: '8px 12px',
-                        fontSize: '11px',
-                        cursor: 'pointer',
-                        backgroundColor: activeSession && activeSession.targetLanguage === lang ? '#f1f5f9' : 'transparent',
-                        color: activeSession && activeSession.targetLanguage === lang ? '#007bff' : '#334155',
-                        fontWeight: activeSession && activeSession.targetLanguage === lang ? '700' : 'normal',
-                        textAlign: 'left'
-                      }}
-                    >
-                      {lang}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {/* 💬 History Toggle */}
-            <button className="bp-header-btn" title="Saved Conversations" onClick={() => setIsHistoryOpen(!isHistoryOpen)} style={{ marginRight: '6px' }}>
-              💬
-            </button>
-            {/* 🔄 Extract Page */}
-            <button className="bp-header-btn" title="Extract current tab page content" onClick={handleExtract} style={{ marginRight: '6px' }}>
-              🔄
-            </button>
-            {/* 🖥️ Open Full Dashboard */}
-            <button className="bp-header-btn" title="Open Full Dashboard" onClick={handleOpenDashboard}>
-              🖥️
-            </button>
-            <button className="bp-header-btn" title="Close" onClick={() => window.close()}>
-              ×
-            </button>
-          </div>
-        </header>
-
-        {/* Global TTS Audio Control Bar */}
-        {(tts.isPlaying || tts.isPaused) && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            backgroundColor: '#e2e8f0',
-            borderBottom: '1px solid #cbd5e1',
-            padding: '6px 12px',
-            fontSize: '11.5px',
-            color: '#334155',
-            fontFamily: 'var(--font-sans)',
-            animation: 'fadeIn 0.2s',
-            zIndex: 10
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>🔊</span>
-              <strong>{tts.isPaused ? 'Speech Paused' : 'Speaking response...'}</strong>
-            </div>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              {tts.isPaused ? (
-                <button 
-                  onClick={tts.resume} 
-                  style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '13px', padding: 0 }}
-                  title="Play / Resume"
-                >
-                  ▶️ Play
-                </button>
-              ) : (
-                <button 
-                  onClick={tts.pause} 
-                  style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '13px', padding: 0 }}
-                  title="Pause"
-                >
-                  ⏸️ Pause
-                </button>
-              )}
-              <button 
-                onClick={tts.stop} 
-                style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '13px', padding: 0 }}
-                title="Stop"
-              >
-                ⏹️ Stop
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Model suggestions overlay for extension mode */}
-        {showModelHub && (
-          <div style={{
-            position: 'absolute',
-            top: '50px',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: '#ffffff',
-            zIndex: 200,
-            padding: '16px',
-            fontFamily: "var(--font-sans)",
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '8px' }}>
-              <span style={{ fontSize: '13px', fontWeight: 800, color: '#1e293b' }}>🤖 Local Model Hub</span>
-              <button 
-                onClick={() => setShowModelHub(false)}
-                style={{ border: 'none', background: 'none', fontSize: '16px', cursor: 'pointer', color: '#64748b' }}
-              >
-                ✕
-              </button>
-            </div>
-            
-            {/* Status indicator */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-              <span style={{
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: backendStatus === 'online' ? '#10b981' : '#ef4444'
-              }}></span>
-              <span style={{ fontWeight: 600, color: backendStatus === 'online' ? '#10b981' : '#ef4444' }}>
-                Ollama: {backendStatus === 'online' ? 'Online' : 'Offline'}
-              </span>
-            </div>
-
-            {backendStatus === 'offline' && (
-              <div style={{ fontSize: '11px', color: '#991b1b', backgroundColor: '#fef2f2', border: '1px solid #fca5a5', padding: '10px', borderRadius: '6px' }}>
-                Ollama is offline. Start it by running <strong>ollama serve</strong> in terminal.
-              </div>
-            )}
-
-            {/* List of active models */}
-            <div>
-              <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', display: 'block', marginBottom: '6px' }}>Available local models</span>
-              {downloadedModels.length === 0 ? (
-                <div style={{ fontSize: '11px', color: '#94a3b8' }}>No local models downloaded yet.</div>
-              ) : (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {downloadedModels.map(m => (
-                    <span key={m} style={{
-                      fontSize: '11px',
-                      padding: '3px 8px',
-                      backgroundColor: m.includes(activeModel) ? '#e0f2fe' : '#f1f5f9',
-                      border: '1px solid',
-                      borderColor: m.includes(activeModel) ? '#bae6fd' : '#e2e8f0',
-                      color: m.includes(activeModel) ? '#0369a1' : '#475569',
-                      borderRadius: '4px',
-                      fontWeight: 600
-                    }}>
-                      {m}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Recommended models */}
-            <div style={{ marginTop: '4px' }}>
-              <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', display: 'block', marginBottom: '6px' }}>Recommended Models</span>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {[
-                  { name: 'llama3.1:8b', size: '4.7GB' },
-                  { name: 'phi3:latest', size: '2.2GB' },
-                  { name: 'gemma2:2b', size: '1.6GB' }
-                ].map(rec => {
-                  const isDownloaded = downloadedModels.some(dm => dm.includes(rec.name));
-                  return (
-                    <div key={rec.name} style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      fontSize: '12px',
-                      padding: '8px 10px',
-                      backgroundColor: '#f8fafc',
-                      borderRadius: '6px',
-                      border: '1px solid #e2e8f0'
-                    }}>
-                      <span style={{ fontWeight: 600, color: '#334155' }}>
-                        {rec.name} <span style={{ fontWeight: 400, color: '#64748b', fontSize: '10.5px' }}>({rec.size})</span>
-                      </span>
-                      {isDownloaded ? (
-                        <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>✅ OK</span>
-                      ) : (
-                        <button 
-                          onClick={() => {
-                            navigator.clipboard.writeText(`ollama run ${rec.name}`);
-                            alert(`Pull command copied! Run this in your terminal to install: \n\nollama run ${rec.name}`);
-                          }}
-                          style={{
-                            padding: '3px 8px',
-                            backgroundColor: '#3b82f6',
-                            color: '#ffffff',
-                            border: 'none',
-                            borderRadius: '4px',
-                            fontSize: '10px',
-                            fontWeight: 600,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          Copy Pull
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Collapsible History Drawer */}
-        {isHistoryOpen && (
-          <div style={{
-            position: 'absolute',
-            top: '50px',
-            left: 0,
-            right: 0,
-            backgroundColor: '#ffffff',
-            borderBottom: '1px solid #e2e8f0',
-            boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-            zIndex: 100,
-            maxHeight: '260px',
-            overflowY: 'auto',
-            padding: '12px',
-            fontFamily: "var(--font-sans)",
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '6px' }}>
-              <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase' }}>Saved Chats</span>
-              <button 
-                onClick={() => {
-                  handleNewChat();
-                  setIsHistoryOpen(false);
-                }}
-                style={{ 
-                  backgroundColor: '#007bff', 
-                  color: '#ffffff', 
-                  border: 'none', 
-                  borderRadius: '4px', 
-                  padding: '3px 8px', 
-                  fontSize: '10.5px', 
-                  fontWeight: 600, 
-                  cursor: 'pointer' 
-                }}
-              >
-                + New Chat
-              </button>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {sessions.map(s => (
-                <div 
-                  key={s.id} 
-                  style={{
-                    padding: '8px',
-                    borderRadius: '6px',
-                    backgroundColor: s.id === currentSessionId ? 'rgba(0, 123, 255, 0.08)' : '#f8fafc',
-                    border: '1px solid',
-                    borderColor: s.id === currentSessionId ? 'rgba(0, 123, 255, 0.2)' : '#e2e8f0',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '2px',
-                    transition: 'background-color 0.2s'
-                  }}
-                  onClick={() => {
-                    handleSwitchSession(s.id);
-                    setIsHistoryOpen(false);
-                  }}
-                >
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: s.id === currentSessionId ? '#007bff' : '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {s.title}
-                  </span>
-                  {s.pageContent && s.pageContent.url && (
-                    <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      🔗 {new URL(s.pageContent.url).hostname}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Chat Body */}
-        <main className="bp-chat-body" ref={chatHistoryRef}>
-          <div className="bp-chat-history">
-            {/* Welcome messages if empty */}
-            {activeSession && activeSession.messages.length <= 1 && (
-              <>
-                <div className="bp-msg-row assistant">
-                  <div className="bp-avatar">🐧</div>
-                  <div className="bp-msg-bubble">
-                    Hi! Welcome to your AI Browser Companion.
-                  </div>
-                </div>
-                <div className="bp-msg-row assistant">
-                  <div className="bp-avatar">🐧</div>
-                  <div className="bp-msg-bubble" style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', maxWidth: '280px' }}>
-                    <div style={{ fontSize: '12px', fontWeight: 500, lineHeight: 1.4 }}>
-                      To start asking questions about this page, let's extract its content or attach a document:
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
-                      <button 
-                        onClick={handleExtract}
-                        style={{
-                          padding: '7px 12px',
-                          backgroundColor: '#007bff',
-                          color: '#ffffff',
-                          border: 'none',
-                          borderRadius: '6px',
-                          fontSize: '11.5px',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '6px',
-                          boxShadow: '0 2px 4px rgba(0, 123, 255, 0.2)'
-                        }}
-                      >
-                        ⚡ Extract Active Webpage
-                      </button>
-                      <button 
-                        onClick={() => fileInputRef.current.click()}
-                        style={{
-                          padding: '7px 12px',
-                          backgroundColor: '#f1f5f9',
-                          color: '#334155',
-                          border: '1px solid #cbd5e1',
-                          borderRadius: '6px',
-                          fontSize: '11.5px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '6px'
-                        }}
-                      >
-                        📎 Attach PDF / Document
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                {/* Quick suggestion chips */}
-                <div className="bp-chips-container">
-                  <button className="bp-chip" onClick={() => handleIntentAction('SUMMARIZE')}>
-                    📝 Summarize Page
-                  </button>
-                  <button className="bp-chip" onClick={() => handleIntentAction('EXPLAIN_SIMPLE')}>
-                    👁️ Explain Simply
-                  </button>
-                  <button className="bp-chip" onClick={() => handleIntentAction('EXAMPLE')}>
-                    📂 Generate Example
-                  </button>
-                </div>
-              </>
-            )}
-
-            {/* Render active chat messages */}
-            {activeSession && activeSession.messages.map((msg, index) => {
-              if (index === 0 && activeSession.messages.length > 1 && msg.content.includes("MOMENTUM OS")) return null;
-              
-              return (
-                <div key={index} className={`bp-msg-row ${msg.role}`}>
-                  {msg.role === 'assistant' && <div className="bp-avatar">🐧</div>}
-                  <div className="bp-msg-bubble" style={{ position: 'relative', paddingRight: msg.role === 'assistant' ? '28px' : '12px' }}>
-                    {msg.content}
-                    {msg.role === 'assistant' && (
-                      <button
-                        onClick={() => tts.speak(msg.content.replace(/[#*`_]/g, ''), getLangCode(activeSession.targetLanguage))}
-                        style={{
-                          position: 'absolute',
-                          bottom: '6px',
-                          right: '6px',
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          opacity: 0.6,
-                          padding: 0
-                        }}
-                        title="Read aloud"
-                      >
-                        🔊
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Thinking loader */}
-            {uiState === 'Thinking' && (
-              <div className="bp-msg-row assistant">
-                <div className="bp-avatar">🐧</div>
-                <div className="bp-msg-bubble loading">
-                  <span className="bp-dot-loader"></span>
-                  <span className="bp-dot-loader"></span>
-                  <span className="bp-dot-loader"></span>
-                </div>
-              </div>
-            )}
-          </div>
-        </main>
-
-        {/* Input Row */}
-        <footer className="bp-input-footer">
-          {/* 🔄 Extract Page Icon Button */}
-          <button className="bp-btn-send" onClick={handleExtract} title="Extract current tab page content" style={{ marginRight: '2px', color: '#007bff' }}>
-            🔄
-          </button>
-          <input 
-            type="text" 
-            className="bp-input-field" 
-            placeholder={stt.isListening ? "Listening..." : "Ask anything about this page..."} 
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          />
-          {/* 🎙️ Voice Input Button */}
-          {stt.isSupported !== false && (
-            <button 
-              className="bp-btn-send" 
-              onClick={handleMicToggle} 
-              title={stt.isListening ? "Click to stop recording" : "Click to speak"}
-              style={{ 
-                marginRight: '4px', 
-                color: stt.isListening ? '#ef4444' : '#64748b',
-                animation: stt.isListening ? 'mic-pulse 1s infinite' : 'none',
-                position: 'relative'
-              }}
-            >
-              {stt.isListening ? '🔴' : '🎙️'}
-            </button>
-          )}
-          <button className="bp-btn-send" onClick={handleSend} title="Send message">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style={{ width: '20px', height: '20px' }}>
-              <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
-            </svg>
-          </button>
-        </footer>
-      </div>
-    );
-  }
-
   return (
-    <div className="messenger-container">
-      {/* Left Sidebar */}
-      <aside className="ms-left-sidebar">
-        <div className="ms-logo-area">
-          <div className="ms-logo-dot"></div>
-          <h2 style={{ fontSize: '15px', fontWeight: 800, color: '#2b3a4a', fontFamily: 'var(--font-sans)' }}>AI COMPANION</h2>
-        </div>
-        
-        <button className="btn-create-new" onClick={handleNewChat}>
-          📝 Create New
-        </button>
-
-        <ul className="ms-nav-list">
-          <li className={`ms-nav-item ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>
-            💬 Conversations
-          </li>
-          <li className={`ms-nav-item ${activeTab === 'archive' ? 'active' : ''}`} onClick={() => setActiveTab('archive')}>
-            📜 Chat Archive
-          </li>
-          <li className={`ms-nav-item ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>
-            🤖 Model Hub
-          </li>
-          <li className="ms-nav-item" onClick={() => setShowHelp(!showHelp)}>
-            ❓ Operator Help
-          </li>
-          <li className="ms-nav-item" onClick={handleExtract}>
-            ⚡ Extract Page
-          </li>
-        </ul>
-
-        <div style={{ marginTop: 'auto', borderTop: '1px solid #e9ecef', paddingTop: '16px' }}>
-          <h4 style={{ fontSize: '11px', fontWeight: 700, color: '#7c8ba1', textTransform: 'uppercase', marginBottom: '8px' }}>Saved Chats</h4>
-          <div className="session-list-ms" style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {sessions.map(s => (
-              <div 
-                key={s.id} 
-                style={{
-                  padding: '8px 10px',
-                  borderRadius: '6px',
-                  backgroundColor: s.id === currentSessionId ? 'rgba(59, 130, 246, 0.08)' : 'transparent',
-                  border: '1px solid',
-                  borderColor: s.id === currentSessionId ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
-                  cursor: 'pointer',
-                  fontSize: '12.5px',
-                  fontWeight: 600,
-                  color: s.id === currentSessionId ? '#3b82f6' : '#555555',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '2px',
-                  transition: 'background-color 0.2s'
-                }}
-                onClick={() => handleSwitchSession(s.id)}
-              >
-                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {s.title}
-                </span>
-                {s.pageContent && s.pageContent.url && (
-                  <span style={{ fontSize: '10px', color: '#888888', fontWeight: 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    🔗 {new URL(s.pageContent.url).hostname}
-                  </span>
-                )}
-              </div>
-            ))}
+    <div className="extension-container">
+      <div className="mac-window" style={{ width: '100%', height: '100%', borderRadius: '12px' }}>
+        <div className="mac-titlebar" onPointerDown={handleTitlebarPointerDown} style={{ cursor: 'move' }}>
+          <div className="mac-titlebar-left">
+            <div className="mac-circle mac-red" onClick={handleClose}></div>
+            <div className="mac-circle mac-yellow"></div>
+            <div className="mac-circle mac-green"></div>
+          </div>
+          <div className="mac-titlebar-center">AI Browser Companion</div>
+          <div className="mac-titlebar-right">
+            <button className={`mac-icon-btn ${showSidebar ? 'active' : ''}`} onClick={() => setShowSidebar(!showSidebar)} title="Toggle Sidebar">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M3 2h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1zm0 1v10h10V3H3zm1 1h2v8H4V4z"/>
+              </svg>
+            </button>
           </div>
         </div>
-      </aside>
 
-      {activeTab === 'archive' ? (
-        <>
-          {/* Middle Archive Panel */}
-          <main className="ms-chat-panel" style={{ flex: 1.5, borderRight: '1px solid #e9ecef' }}>
-            <header className="ms-chat-header">
-              <div>
-                <div className="ms-chat-title">📜 Conversation Archive</div>
-                <div style={{ fontSize: '11px', color: '#64748b' }}>Search and manage your saved chat history</div>
-              </div>
-            </header>
-            
-            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', height: 'calc(100vh - 70px)', overflowY: 'auto' }}>
-              {/* Search Bar */}
-              <input 
-                type="text"
-                placeholder="🔍 Search conversations by title or webpage URL..."
-                value={archiveSearch}
-                onChange={(e) => setArchiveSearch(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  borderRadius: '8px',
-                  border: '1px solid #e2e8f0',
-                  fontSize: '13px',
-                  outline: 'none',
-                  backgroundColor: '#ffffff'
-                }}
-              />
-
-              {/* Grid of Conversations */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {filteredSessions.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '40px', color: '#94a3b8' }}>
-                    <div style={{ fontSize: '32px', marginBottom: '8px' }}>📂</div>
-                    <div style={{ fontWeight: 600 }}>No conversations found</div>
+        <div className="mac-body">
+          {showSidebar && (
+            <div className="mac-sidebar">
+              <div className="mac-section">
+                <span className="mac-section-title">MODEL RUNNER</span>
+                <div 
+                  className="mac-model-card" 
+                  onClick={() => setShowModelHub(!showModelHub)} 
+                  style={{ 
+                    cursor: 'pointer', 
+                    padding: '8px 12px', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '8px',
+                    background: '#ffffff',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '8px'
+                  }}
+                >
+                  <span className={`mac-status-dot ${backendStatus}`}></span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', lineHeight: '1.2' }}>
+                      <span className="mac-model-provider" style={{ fontSize: '11px', fontWeight: 'bold', color: '#22c55e' }}>LM</span>
+                      <span className="mac-model-provider" style={{ fontSize: '11px', fontWeight: 'bold', color: '#22c55e' }}>Studio</span>
+                    </div>
+                    <span className="mac-model-name" style={{ fontSize: '10px', color: '#22c55e', fontWeight: 'bold', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '85px' }}>
+                      ({activeModel})
+                    </span>
                   </div>
-                ) : (
-                  filteredSessions.map(s => (
-                    <div 
-                      key={s.id}
-                      style={{
-                        padding: '16px',
-                        borderRadius: '8px',
-                        backgroundColor: selectedArchiveId === s.id ? 'rgba(59, 130, 246, 0.04)' : '#ffffff',
-                        border: '1px solid',
-                        borderColor: selectedArchiveId === s.id ? '#3b82f6' : '#e2e8f0',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        transition: 'all 0.2s'
-                      }}
-                      onClick={() => setSelectedArchiveId(s.id)}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '75%' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {s.title}
-                        </span>
-                        {s.pageContent && s.pageContent.url && (
-                          <span style={{ fontSize: '11px', color: '#3b82f6', textDecoration: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            🔗 {s.pageContent.url}
-                          </span>
-                        )}
-                        <span style={{ fontSize: '11px', color: '#64748b' }}>
-                          💬 {s.messages.length} messages • ⏱️ {new Date(s.id).toLocaleDateString()}
-                        </span>
-                      </div>
-                      
-                      <div style={{ display: 'flex', gap: '8px' }} onClick={(e) => e.stopPropagation()}>
-                        <button 
-                          onClick={() => {
-                            handleSwitchSession(s.id);
-                            setActiveTab('chat');
-                          }}
-                          style={{
-                            padding: '6px 12px',
-                            backgroundColor: '#10b981',
-                            color: '#ffffff',
-                            border: 'none',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 600,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          Open Chat
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteSession(s.id)}
-                          style={{
-                            padding: '6px 10px',
-                            backgroundColor: '#ef4444',
-                            color: '#ffffff',
-                            border: 'none',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 600,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </main>
-
-          {/* Right Preview Panel */}
-          <aside className="ms-right-sidebar" style={{ flex: 1.2, padding: '20px', display: 'flex', flexDirection: 'column', backgroundColor: '#f8fafc' }}>
-            <h3 style={{ fontSize: '12px', fontWeight: 800, color: '#475569', textTransform: 'uppercase', marginBottom: '12px', borderBottom: '1px solid #cbd5e1', paddingBottom: '6px' }}>
-              Transcript Preview
-            </h3>
-            
-            {archivePreviewSession ? (
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px', maxHeight: 'calc(100vh - 180px)' }}>
-                  {archivePreviewSession.messages.map((msg, index) => (
-                    <div key={index} style={{
-                      padding: '10px 12px',
-                      borderRadius: '8px',
-                      backgroundColor: msg.role === 'user' ? '#e0f2fe' : '#ffffff',
-                      border: '1px solid #e2e8f0',
-                      alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                      maxWidth: '85%'
-                    }}>
-                      <div style={{ fontSize: '10px', fontWeight: 700, color: msg.role === 'user' ? '#0369a1' : '#475569', marginBottom: '2px', textTransform: 'uppercase' }}>
-                        {msg.role === 'user' ? 'User' : 'Assistant'}
-                      </div>
-                      <div style={{ fontSize: '12.5px', color: '#1e293b', lineHeight: '1.4', wordBreak: 'break-word' }}>
-                        {msg.content}
-                      </div>
-                    </div>
-                  ))}
                 </div>
+              </div>
+
+              <div className="mac-section">
+                <span className="mac-section-title">VOICE CONTROLS</span>
+                <div className="mac-voice-controls">
+                  <button className="mac-ctrl-btn" onClick={tts.resume} title="Play / Resume">▶</button>
+                  <button className="mac-ctrl-btn" onClick={tts.pause} title="Pause">⏸</button>
+                  <button className="mac-ctrl-btn" onClick={tts.stop} title="Stop">⏹</button>
+                </div>
+              </div>
+
+              <div className="mac-section">
+                <span className="mac-section-title">SPEAKER VOICE</span>
+                <div className="mac-select-wrapper">
+                  <select 
+                    value={activeSession ? activeSession.targetLanguage : targetLanguage}
+                    onChange={(e) => {
+                      const newLang = e.target.value;
+                      if (activeSession) {
+                        activeSession.targetLanguage = newLang;
+                        const updated = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? activeSession : s);
+                        saveSessionsToStorage(updated, currentSessionIdRef.current);
+                      } else {
+                        setTargetLanguage(newLang);
+                      }
+                    }}
+                    className="mac-select"
+                  >
+                    {['English (US)', 'English (UK)', 'Hindi', 'Bengali', 'Tamil', 'Telugu', 'Marathi', 'Gujarati', 'Kannada', 'Malayalam', 'Punjabi', 'Odia', 'Urdu', 'Sanskrit'].map(lang => (
+                      <option key={lang} value={lang}>{lang}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mac-section" style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button className="mac-new-chat-btn" onClick={handleNewChat} style={{
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  color: '#475569'
+                }}>
+                  ➕ New Chat
+                </button>
                 
-                <div style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: '8px' }}>
+                <button className="mac-extract-btn" onClick={handleExtract} style={{
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #3b82f6',
+                  background: '#3b82f6',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  color: '#ffffff',
+                  marginTop: '2px'
+                }}>
+                  ⚡ Extract Page
+                </button>
+                
+                <div style={{ marginTop: '2px' }}>
                   <button 
-                    onClick={() => exportSessionMarkdown(archivePreviewSession)}
+                    onClick={() => fileInputRef.current && fileInputRef.current.click()}
                     style={{
-                      flex: 1,
-                      padding: '8px 12px',
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #cbd5e1',
+                      width: '100%',
+                      padding: '6px 12px',
                       borderRadius: '6px',
-                      fontSize: '12px',
+                      border: '1px solid #cbd5e1',
+                      background: '#ffffff',
+                      fontSize: '11px',
+                      cursor: 'pointer',
                       fontWeight: 600,
-                      color: '#475569',
-                      cursor: 'pointer'
+                      color: '#475569'
                     }}
                   >
-                    📥 Export Markdown
+                    📎 Upload PDF
                   </button>
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', textAlign: 'center' }}>
-                <div style={{ fontSize: '32px', marginBottom: '8px' }}>👁️</div>
-                <p style={{ fontSize: '12px' }}>Select a conversation to preview its transcript</p>
-              </div>
-            )}
-          </aside>
-        </>
-      ) : activeTab === 'models' ? (
-        <>
-          {/* Middle Models Hub Panel */}
-          <main className="ms-chat-panel" style={{ flex: 1.5, borderRight: '1px solid #e9ecef' }}>
-            <header className="ms-chat-header">
-              <div>
-                <div className="ms-chat-title">🤖 Local Model Hub</div>
-                <div style={{ fontSize: '11px', color: '#64748b' }}>Check health, active models, and suggestions</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{
-                  padding: '4px 8px',
-                  borderRadius: '12px',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  textTransform: 'uppercase',
-                  backgroundColor: backendStatus === 'online' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                  color: backendStatus === 'online' ? '#10b981' : '#ef4444'
-                }}>
-                  {backendStatus === 'online' ? '● Ollama Online' : '● Ollama Offline'}
-                </span>
-              </div>
-            </header>
-
-            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', height: 'calc(100vh - 70px)', overflowY: 'auto' }}>
-              {/* Ollama Offline Banner */}
-              {backendStatus === 'offline' && (
-                <div style={{
-                  padding: '16px',
-                  backgroundColor: '#fef2f2',
-                  border: '1px solid #fca5a5',
-                  borderRadius: '8px',
-                  color: '#991b1b',
-                  fontSize: '13px'
-                }}>
-                  <strong style={{ display: 'block', marginBottom: '4px' }}>⚠️ Ollama is Offline</strong>
-                  Make sure Ollama is installed and running on your computer. Start it by opening your terminal and running:
-                  <pre style={{
-                    backgroundColor: '#ffffff',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    border: '1px solid #fca5a5',
-                    marginTop: '8px',
-                    fontSize: '12.5px',
-                    fontFamily: 'var(--font-mono)'
-                  }}>ollama serve</pre>
-                </div>
-              )}
-
-              {/* Downloaded Models */}
-              <div>
-                <h3 style={{ fontSize: '13px', fontWeight: 800, color: '#475569', textTransform: 'uppercase', marginBottom: '10px' }}>Downloaded Models</h3>
-                {downloadedModels.length === 0 ? (
-                  <div style={{ fontSize: '12px', color: '#94a3b8', padding: '12px', border: '1px dashed #cbd5e1', borderRadius: '6px', textAlign: 'center' }}>
-                    No downloaded models found. Start Ollama or check your connection.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {downloadedModels.map(m => (
-                      <span key={m} style={{
-                        padding: '6px 12px',
-                        backgroundColor: m.includes(activeModel) ? '#e0f2fe' : '#f1f5f9',
-                        border: '1px solid',
-                        borderColor: m.includes(activeModel) ? '#bae6fd' : '#e2e8f0',
-                        color: m.includes(activeModel) ? '#0369a1' : '#475569',
-                        borderRadius: '6px',
-                        fontSize: '12.5px',
-                        fontWeight: 600
-                      }}>
-                        {m} {m.includes(activeModel) && '⭐'}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Recommended Models */}
-              <div>
-                <h3 style={{ fontSize: '13px', fontWeight: 800, color: '#475569', textTransform: 'uppercase', marginBottom: '10px' }}>Recommended Models</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {[
-                    { name: 'llama3.1:8b', size: '4.7 GB', desc: 'Highly recommended for detailed reasoning and code companion tasks.' },
-                    { name: 'phi3:latest', size: '2.2 GB', desc: 'Microsoft lightweight 3.8B model. Super fast, perfect for summaries.' },
-                    { name: 'gemma2:2b', size: '1.6 GB', desc: 'Google lightweight 2B model. Fast and highly structured.' },
-                    { name: 'qwen2.5:7b', size: '4.7 GB', desc: 'Alibaba robust multilingual model. Strong in general instructions.' },
-                    { name: 'mistral:latest', size: '4.1 GB', desc: 'Solid general instruction-following 7B model.' }
-                  ].map(rec => {
-                    const isDownloaded = downloadedModels.some(dm => dm.includes(rec.name));
-                    return (
-                      <div key={rec.name} style={{
-                        padding: '14px',
-                        backgroundColor: '#ffffff',
-                        border: '1px solid #e2e8f0',
-                        borderRadius: '8px',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '70%' }}>
-                          <span style={{ fontSize: '13.5px', fontWeight: 700, color: '#1e293b' }}>
-                            {rec.name} <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 500 }}>({rec.size})</span>
-                          </span>
-                          <span style={{ fontSize: '12px', color: '#64748b', lineHeight: '1.4' }}>{rec.desc}</span>
-                        </div>
-                        <div>
-                          {isDownloaded ? (
-                            <span style={{ fontSize: '12px', color: '#10b981', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              ✅ Available
-                            </span>
-                          ) : (
-                            <button 
-                              onClick={() => {
-                                navigator.clipboard.writeText(`ollama run ${rec.name}`);
-                                alert(`Command copied! Paste this in your terminal to install: \n\nollama run ${rec.name}`);
-                              }}
-                              style={{
-                                padding: '6px 12px',
-                                backgroundColor: '#3b82f6',
-                                color: '#ffffff',
-                                border: 'none',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                cursor: 'pointer'
-                              }}
-                            >
-                              Copy Command
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleFileUpload} 
+                    accept=".txt,.js,.css,.html,.md,.json,.csv,.pdf" 
+                    style={{ display: 'none' }} 
+                  />
                 </div>
               </div>
             </div>
-          </main>
+          )}
 
-          {/* Right Preview Panel */}
-          <aside className="ms-right-sidebar" style={{ flex: 1.2, padding: '20px', display: 'flex', flexDirection: 'column', backgroundColor: '#f8fafc' }}>
-            <h3 style={{ fontSize: '12px', fontWeight: 800, color: '#475569', textTransform: 'uppercase', marginBottom: '12px', borderBottom: '1px solid #cbd5e1', paddingBottom: '6px' }}>
-              Ollama Guide
-            </h3>
-            <div style={{ fontSize: '12.5px', color: '#475569', lineHeight: '1.5', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <p>Ollama runs LLMs locally on your own hardware. Your chats never leave your machine.</p>
-              <h4 style={{ fontWeight: 700, color: '#1e293b', marginTop: '6px' }}>How to Use a Model:</h4>
-              <ol style={{ paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <li>Install Ollama from <a href="https://ollama.com" target="_blank" rel="noreferrer" style={{ color: '#3b82f6', textDecoration: 'none' }}>ollama.com</a>.</li>
-                <li>Open your Terminal or Command Prompt.</li>
-                <li>Run the copy-pasteable pull command.</li>
-                <li>Once the pull completes, our dashboard will automatically detect it!</li>
-              </ol>
-            </div>
-          </aside>
-        </>
-      ) : (
-        <>
-          {/* Middle Main Chat Panel */}
-          <main className="ms-chat-panel">
-            <header className="ms-chat-header">
-              <div className="ms-chat-title-wrapper">
-                <div className="ms-avatar-circle" style={{ width: '32px', height: '32px', backgroundColor: '#3b82f6', color: '#ffffff', fontWeight: 700, fontSize: '12px' }}>
-                  AI
-                </div>
-                <div>
-                  <div className="ms-chat-title">{activeSession ? activeSession.title : 'New Chat Session'}</div>
-                  <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>Active Connection</div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                {/* Language Selector */}
-                {activeSession && (
-                  <div className="intent-selector" ref={langRef}>
-                    <button 
-                      className="lang-btn" 
-                      onClick={() => setIsLangOpen(!isLangOpen)}
-                      style={{ backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0', color: '#475569', borderRadius: '6px', fontSize: '11px', height: '32px' }}
-                    >
-                      🌐 {activeSession.targetLanguage} ▾
-                    </button>
-                    {isLangOpen && (
-                      <div className="lang-dropdown-menu" style={{ right: 0, maxHeight: '200px', overflowY: 'auto' }}>
-                        {['English (US)', 'English (UK)', 'Hindi', 'Bengali', 'Tamil', 'Telugu', 'Marathi', 'Gujarati', 'Kannada', 'Malayalam', 'Punjabi', 'Odia', 'Urdu', 'Sanskrit'].map(lang => (
-                          <div 
-                            key={lang} 
-                            onClick={() => {
-                              activeSession.targetLanguage = lang;
-                              saveSessionsToStorage(sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? activeSession : s), currentSessionIdRef.current);
-                              setIsLangOpen(false);
-                            }}
-                            className={`dropdown-item ${activeSession.targetLanguage === lang ? 'active' : ''}`}
-                          >
-                            {lang}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-                <span className="ms-model-badge">{activeModel.toUpperCase()}</span>
-              </div>
-            </header>
-
-            {/* Global TTS Audio Control Bar for Webpage */}
-            {(tts.isPlaying || tts.isPaused) && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                backgroundColor: '#e2e8f0',
-                borderBottom: '1px solid #cbd5e1',
-                padding: '8px 16px',
-                fontSize: '12px',
-                color: '#334155',
-                fontFamily: 'var(--font-sans)',
-                animation: 'fadeIn 0.2s',
-                zIndex: 10
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>🔊</span>
-                  <strong>{tts.isPaused ? 'Speech Paused' : 'Speaking response...'}</strong>
-                </div>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  {tts.isPaused ? (
-                    <button 
-                      onClick={tts.resume} 
-                      style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600, color: '#3b82f6', padding: 0 }}
-                      title="Play / Resume"
-                    >
-                      ▶️ Play
-                    </button>
-                  ) : (
-                    <button 
-                      onClick={tts.pause} 
-                      style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600, color: '#3b82f6', padding: 0 }}
-                      title="Pause"
-                    >
-                      ⏸️ Pause
-                    </button>
-                  )}
-                  <button 
-                    onClick={tts.stop} 
-                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 600, color: '#ef4444', padding: 0 }}
-                    title="Stop"
-                  >
-                    ⏹️ Stop
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="ms-chat-messages" ref={chatHistoryRef}>
-              {showHelp ? (
-                <div className="ms-msg-row assistant">
-                  <div className="ms-avatar-circle" style={{ backgroundColor: '#e2e8f0' }}>🤖</div>
-                  <div className="ms-bubble">
-                    <h3 style={{ fontWeight: 700, marginBottom: '8px' }}>AI Browser Companion Help</h3>
-                    <p style={{ marginBottom: '8px' }}>This panel interfaces your browser tab with the local model <strong>{activeModel}</strong>.</p>
-                    <p style={{ marginBottom: '8px' }}><strong>Instructions:</strong></p>
-                    <ul style={{ paddingLeft: '16px', listStyleType: 'square' }}>
-                      <li>Click "Extract Page" in the sidebar to load active webpage content.</li>
-                      <li>Use the bottom input to chat about the extracted context.</li>
-                    </ul>
-                    <button className="btn-send-ms" style={{ marginTop: '12px', height: '30px' }} onClick={() => setShowHelp(false)}>Close Help</button>
-                  </div>
-                </div>
-              ) : uiState === 'Thinking' ? (
-                <div className="ms-msg-row assistant">
-                  <div className="ms-avatar-circle" style={{ backgroundColor: '#e2e8f0' }}>🤖</div>
-                  <div className="ms-bubble">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span className="bp-dot-loader"></span>
-                      <span className="bp-dot-loader"></span>
-                      <span className="bp-dot-loader"></span>
-                      <span style={{ fontSize: '12px', color: '#777777', fontWeight: 600 }}>Decoding page elements...</span>
-                    </div>
-                  </div>
-                </div>
-              ) : activeSession && activeSession.messages.length > 0 ? (
+          <div className="mac-chat-pane">
+            <div className="mac-messages-container" ref={chatHistoryRef}>
+              {activeSession && activeSession.messages.length > 0 ? (
                 activeSession.messages.map((msg, index) => {
                   if (index === 0 && activeSession.messages.length > 1 && msg.content.includes("MOMENTUM OS")) return null;
                   return (
-                    <div key={index} className={`ms-msg-row ${msg.role}`}>
-                      <div className="ms-avatar-circle" style={{ backgroundColor: msg.role === 'user' ? '#3b82f6' : '#e2e8f0', color: msg.role === 'user' ? '#ffffff' : '#333333' }}>
-                        {msg.role === 'user' ? 'U' : '🤖'}
-                      </div>
-                      <div className="ms-bubble" style={{ position: 'relative', paddingRight: msg.role === 'assistant' ? '32px' : '16px' }}>
+                    <div key={index} className={`mac-msg-row ${msg.role}`}>
+                      <div className="mac-msg-bubble">
                         {msg.content}
                         {msg.role === 'assistant' && (
                           <button
                             onClick={() => tts.speak(msg.content.replace(/[#*`_]/g, ''), getLangCode(activeSession.targetLanguage))}
-                            style={{
-                              position: 'absolute',
-                              bottom: '6px',
-                              right: '8px',
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              fontSize: '12px',
-                              opacity: 0.6,
-                              padding: 0
-                            }}
+                            className="mac-bubble-speaker"
                             title="Read aloud"
                           >
                             🔊
@@ -2030,108 +1162,97 @@ function App() {
                   );
                 })
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8' }}>
-                  <div style={{ fontSize: '48px', marginBottom: '12px' }}>💬</div>
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#64748b' }}>No Messages Yet</h3>
-                  <p style={{ fontSize: '13px', color: '#94a3b8' }}>Extract a page or type a message below to begin.</p>
+                <div className="mac-empty-state">
+                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>💬</div>
+                  <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#333333' }}>Hello! I am your macOS browser assistant.</h3>
+                  <p style={{ fontSize: '11px', color: '#888888' }}>Type a message or speak to start.</p>
+
+                  <div className="mac-chips-container" style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                    <button className="mac-chip-btn" onClick={() => handleIntentAction('SUMMARIZE')}>
+                      📝 Summarize Page
+                    </button>
+                    <button className="mac-chip-btn" onClick={() => handleIntentAction('EXPLAIN_SIMPLE')}>
+                      👁️ Explain Simply
+                    </button>
+                    <button className="mac-chip-btn" onClick={() => handleIntentAction('EXAMPLE')}>
+                      📂 Generate Example
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* Bottom input area */}
-            <footer className="ms-input-area">
-              <div className="ms-input-capsule">
+            <div className="mac-footer">
+              <input 
+                type="text" 
+                className="mac-input"
+                placeholder={stt.isListening ? "Listening..." : "Type a message or ask a question..."}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+              />
+              {stt.isSupported !== false && (
                 <button 
-                  className="btn-upload-ms" 
-                  title="Upload file" 
-                  onClick={() => fileInputRef.current.click()}
+                  className={`mac-btn-mic ${stt.isListening ? 'listening' : ''}`}
+                  onClick={handleMicToggle}
+                  title={stt.isListening ? "Listening... Click to stop" : "Speak to type"}
                 >
-                  📎
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="5" y="9" width="2" height="6" rx="1" fill="currentColor"/>
+                    <rect x="9" y="5" width="2" height="14" rx="1" fill="currentColor"/>
+                    <rect x="13" y="7" width="2" height="10" rx="1" fill="currentColor"/>
+                    <rect x="17" y="9" width="2" height="6" rx="1" fill="currentColor"/>
+                  </svg>
                 </button>
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleFileUpload} 
-                  accept=".txt,.js,.css,.html,.md,.json,.csv,.pdf"
-                  style={{ display: 'none' }}
-                />
-                <input 
-                  type="text" 
-                  className="ms-text-input" 
-                  placeholder={stt.isListening ? "Listening..." : "Type a message..."}
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                />
-                {/* 🎙️ Voice Input Button */}
-                {stt.isSupported !== false && (
-                  <button 
-                    className="btn-upload-ms" 
-                    onClick={handleMicToggle}
-                    title={stt.isListening ? "Click to stop recording" : "Click to speak"}
-                    style={{ 
-                      fontSize: '18px', 
-                      color: stt.isListening ? '#ef4444' : '#64748b', 
-                      marginRight: '6px',
-                      animation: stt.isListening ? 'mic-pulse 1s infinite' : 'none'
-                    }}
-                  >
-                    {stt.isListening ? '🔴' : '🎙️'}
-                  </button>
-                )}
-                <button className="btn-send-ms" onClick={handleSend}>
-                  Send ➤
-                </button>
-              </div>
-            </footer>
-          </main>
-
-          {/* Right Detail Sidebar */}
-          <aside className="ms-right-sidebar">
-            <div className="ms-profile-area">
-              <div className="ms-profile-avatar">👨‍💻</div>
-              <div className="ms-profile-name">Operator Console</div>
-              <div className="ms-profile-title">Clearance Level: 1</div>
+              )}
+              <button className="mac-btn-send" onClick={handleSend}>
+                Send
+              </button>
             </div>
+          </div>
+        </div>
 
-            <div className="ms-panel-section">
-              <h3 className="ms-section-label">Context Stats</h3>
-              <div className="ms-stats-list">
-                <div className="ms-stat-row">
-                  <span className="ms-stat-name">Words Compiled</span>
-                  <span className="ms-stat-value">
-                    {activeSession && activeSession.pageContent ? activeSession.pageContent.wordCount.toLocaleString() : '0'}
-                  </span>
-                </div>
-                <div className="ms-stat-row">
-                  <span className="ms-stat-name">Speed Index</span>
-                  <span className="ms-stat-value">{generationTime || timerVal}s</span>
-                </div>
-                <div className="ms-stat-row">
-                  <span className="ms-stat-name">Local Model</span>
-                  <span className="ms-stat-value">{activeModel.toUpperCase()}</span>
-                </div>
-              </div>
+        {showModelHub && (
+          <div className="mac-overlay">
+            <div className="mac-overlay-header">
+              <span>🤖 Local Model Hub</span>
+              <button onClick={() => setShowModelHub(false)}>✕</button>
             </div>
-
-            <div className="ms-panel-section" style={{ flex: 1 }}>
-              <h3 className="ms-section-label">Extracted Materials</h3>
-              <div className="ms-files-grid" style={{ overflowY: 'auto', maxHeight: '200px' }}>
-                {activeSession && activeSession.pageContent ? (
-                  <div className="ms-file-card">
-                    <span className="ms-file-icon">📄</span>
-                    <span className="ms-file-name" title={activeSession.title}>{activeSession.title}</span>
-                  </div>
+            <div className="mac-overlay-body">
+              <div className="mac-status-row">
+                <span className={`mac-dot ${backendStatus === 'online' ? 'online' : 'offline'}`}></span>
+                <span>Ollama Status: <strong>{backendStatus === 'online' ? 'Online' : 'Offline'}</strong></span>
+              </div>
+              {backendStatus === 'offline' && (
+                <div className="mac-alert-box">
+                  Ollama is offline. Start it by running <code>ollama serve</code> in terminal.
+                </div>
+              )}
+              <div style={{ marginTop: '10px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#888', display: 'block', marginBottom: '4px' }}>DOWNLOADED MODELS:</span>
+                {downloadedModels.length === 0 ? (
+                  <span style={{ fontSize: '11px', color: '#aaa' }}>No models downloaded.</span>
                 ) : (
-                  <div style={{ gridColumn: 'span 2', fontSize: '11px', color: '#94a3b8', textAlign: 'center', padding: '16px 0' }}>
-                    No pages extracted.
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {downloadedModels.map(m => (
+                      <span 
+                        key={m} 
+                        className={`mac-model-tag ${activeModel === m ? 'active' : ''}`}
+                        onClick={() => {
+                          setActiveModel(m);
+                          setShowModelHub(false);
+                        }}
+                      >
+                        {m}
+                      </span>
+                    ))}
                   </div>
                 )}
               </div>
             </div>
-          </aside>
-        </>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
