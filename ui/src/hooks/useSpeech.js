@@ -9,14 +9,30 @@ export function useSpeechSynthesis() {
   const [isPaused, setIsPaused] = useState(false);
   const synthRef = useRef(window.speechSynthesis);
   const utteranceRef = useRef(null);
+  const audioRef = useRef(null);
 
-  const speak = useCallback((text, langCode = 'en-US', onEnd, onError) => {
-    if (!text || !text.trim()) return;
-    if (synthRef.current) synthRef.current.cancel();
+  const stop = useCallback(() => {
+    if (synthRef.current) {
+      try { synthRef.current.cancel(); } catch (_) {}
+    }
+    if (audioRef.current) {
+      try { audioRef.current.pause(); } catch (_) {}
+      audioRef.current = null;
+    }
+    setIsPlaying(false);
+    setIsPaused(false);
+  }, []);
+
+  const fallbackSpeak = useCallback((text, langCode, onEnd, onError) => {
+    if (!synthRef.current) {
+      setIsPlaying(false);
+      if (onError) onError(new Error('No TTS engine available'));
+      return;
+    }
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = langCode;
-    utterance.rate = 0.95;  // Slightly slower for clarity
+    utterance.rate = 0.95;
     utterance.pitch = 1.0;
     utteranceRef.current = utterance;
 
@@ -28,9 +44,67 @@ export function useSpeechSynthesis() {
     synthRef.current.speak(utterance);
   }, []);
 
-  const pause  = useCallback(() => { if (synthRef.current && isPlaying && !isPaused) { synthRef.current.pause(); setIsPaused(true); } }, [isPlaying, isPaused]);
-  const resume = useCallback(() => { if (synthRef.current && isPlaying && isPaused) { synthRef.current.resume(); setIsPaused(false); } }, [isPlaying, isPaused]);
-  const stop   = useCallback(() => { if (synthRef.current) { synthRef.current.cancel(); setIsPlaying(false); setIsPaused(false); } }, []);
+  const speak = useCallback(async (text, langCode = 'en-US', onEnd, onError) => {
+    if (!text || !text.trim()) return;
+
+    stop();
+
+    setIsPlaying(true);
+    setIsPaused(false);
+
+    try {
+      const response = await fetch('http://localhost:4000/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, lang: langCode })
+      });
+
+      if (!response.ok) {
+        throw new Error('Kokoro TTS server not available');
+      }
+
+      const blob = await response.blob();
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        setIsPlaying(false);
+        setIsPaused(false);
+        if (onEnd) onEnd();
+      };
+
+      audio.onerror = (e) => {
+        console.warn('[useSpeechSynthesis] Kokoro playback failed, falling back to Web Speech:', e);
+        fallbackSpeak(text, langCode, onEnd, onError);
+      };
+
+      await audio.play();
+    } catch (err) {
+      console.warn('[useSpeechSynthesis] Kokoro fetch failed, falling back to Web Speech:', err.message);
+      fallbackSpeak(text, langCode, onEnd, onError);
+    }
+  }, [stop, fallbackSpeak]);
+
+  const pause = useCallback(() => {
+    if (audioRef.current && isPlaying && !isPaused) {
+      audioRef.current.pause();
+      setIsPaused(true);
+    } else if (synthRef.current && isPlaying && !isPaused) {
+      synthRef.current.pause();
+      setIsPaused(true);
+    }
+  }, [isPlaying, isPaused]);
+
+  const resume = useCallback(() => {
+    if (audioRef.current && isPlaying && isPaused) {
+      audioRef.current.play().catch(() => {});
+      setIsPaused(false);
+    } else if (synthRef.current && isPlaying && isPaused) {
+      synthRef.current.resume();
+      setIsPaused(false);
+    }
+  }, [isPlaying, isPaused]);
 
   return { speak, pause, resume, stop, isPlaying, isPaused };
 }
@@ -116,6 +190,7 @@ export function useSpeechRecognition() {
 
     onFinalResultRef.current = onFinalResult;
     accumulatedRef.current = '';
+    let errorOccurred = false;
     setTranscript('');
     setError(null);
 
@@ -158,32 +233,41 @@ export function useSpeechRecognition() {
     recognitionRef.current.onend = () => {
       clearSilenceTimer();
       setIsListening(false);
-      const finalText = accumulatedRef.current.trim();
-      if (finalText && onFinalResultRef.current) {
-        onFinalResultRef.current(finalText);
+      // Don't call onFinalResult if an error already handled the session
+      if (!errorOccurred) {
+        const finalText = accumulatedRef.current.trim();
+        if (finalText && onFinalResultRef.current) {
+          onFinalResultRef.current(finalText);
+        }
       }
       if (onEnd) onEnd();
     };
 
     recognitionRef.current.onerror = (event) => {
-      clearSilenceTimer();
-      setIsListening(false);
+      try {
+        clearSilenceTimer();
+        setIsListening(false);
 
-      // 'no-speech' is a normal timeout, not a real error
-      if (event.error === 'no-speech') {
-        if (onEnd) onEnd();
-        return;
+        // These are non-fatal: no-speech is a normal timeout, aborted fires on manual stop
+        if (event.error === 'no-speech' || event.error === 'aborted') {
+          if (onEnd) onEnd();
+          return;
+        }
+
+        errorOccurred = true;
+
+        const errMsg = {
+          'not-allowed':   'Microphone access was denied. Please allow microphone in browser settings.',
+          'audio-capture': 'No microphone found. Please connect a microphone.',
+          'network':       'Network error during speech recognition.',
+        }[event.error] || `Speech recognition error: ${event.error}`;
+
+        setError(errMsg);
+        if (onError) onError(new Error(errMsg));
+      } catch (handlerErr) {
+        // Prevent the onerror handler itself from crashing the extension
+        console.error('[useSpeechRecognition] Error inside onerror handler:', handlerErr);
       }
-
-      const errMsg = {
-        'not-allowed':    'Microphone access was denied. Please allow microphone in browser settings.',
-        'audio-capture':  'No microphone found. Please connect a microphone.',
-        'network':        'Network error during speech recognition.',
-        'aborted':        'Speech recognition was aborted.',
-      }[event.error] || `Speech recognition error: ${event.error}`;
-
-      setError(errMsg);
-      if (onError) onError(new Error(errMsg));
     };
 
     // ── Start ─────────────────────────────────────────────────────────────────

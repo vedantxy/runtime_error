@@ -1,0 +1,4 @@
+kokoro-onnx>=0.2.0
+soundfile>=0.12.1
+onnxruntime>=1.16.0
+python-dotenv>=1.0.0

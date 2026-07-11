@@ -1,0 +1,13 @@
+# Virtual Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Local Models (heavy weights downloaded at runtime)
+models/
+
+# Local Audio Output
+audio/
+
+# Local Environment Variables
+.env
