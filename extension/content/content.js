@@ -275,6 +275,15 @@ function initShadowDOM() {
       opacity: 1;
       transform: translateY(0);
     }
+    #ai-companion-floating-panel.fullscreen-mode {
+      width: 95vw !important;
+      height: 92vh !important;
+      top: 4vh !important;
+      left: 2.5vw !important;
+      right: auto !important;
+      bottom: auto !important;
+      transition: width 0.3s ease, height 0.3s ease, top 0.3s ease, left 0.3s ease;
+    }
     iframe {
       width: 100%;
       height: 100%;
@@ -440,7 +449,11 @@ function onHostPointerUp(e) {
 
 // Drag & Close communications listener from iframe
 window.addEventListener('message', (event) => {
-  if (!event.origin.startsWith('chrome-extension://')) return;
+  // Allow messages from the extension iframe (chrome-extension://) and dev server (localhost)
+  const origin = event.origin || '';
+  const isExtensionFrame = origin.startsWith('chrome-extension://');
+  const isDevFrame = origin.includes('localhost') || origin.includes('127.0.0.1');
+  if (!isExtensionFrame && !isDevFrame) return;
   if (!event.data) return;
 
   if (event.data.type === 'COMPANION_DRAG_START') {
@@ -466,6 +479,23 @@ window.addEventListener('message', (event) => {
     if (panelContainer && panelContainer.classList.contains('visible')) {
       toggleFloatingPanel();
     }
+  } else if (event.data.type === 'TOGGLE_FULLSCREEN') {
+    if (!panelContainer) return;
+    const isFullscreen = panelContainer.classList.toggle('fullscreen-mode');
+    // When leaving fullscreen, restore draggable position
+    if (!isFullscreen) {
+      panelContainer.style.top = `${currentTop}px`;
+      panelContainer.style.left = `${currentLeft}px`;
+      panelContainer.style.right = 'auto';
+      panelContainer.style.bottom = 'auto';
+    }
+  } else if (event.data.type === 'AGENT_ACTION') {
+    chrome.runtime.sendMessage(event.data.payload, (response) => {
+      const iframe = panelContainer ? panelContainer.querySelector('iframe') : null;
+      if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({ type: 'AGENT_ACTION_RESPONSE', response, messageId: event.data.messageId }, '*');
+      }
+    });
   }
 });
 

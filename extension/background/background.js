@@ -61,6 +61,117 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch(err => sendResponse({ status: 'error', message: err.message }));
       return true; // async response
 
+    case 'AGENT_GOTO_URL':
+      chrome.tabs.create({ url: message.payload.url }, (tab) => {
+        sendResponse({ status: 'success', tabId: tab.id });
+      });
+      return true;
+
+    case 'AGENT_CLICK':
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        if (!tabs[0]) return sendResponse({ status: 'error', message: 'No active tab' });
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: (selector) => {
+            const el = document.querySelector(selector);
+            if (el) { el.click(); return { success: true }; }
+            return { success: false, error: 'Element not found' };
+          },
+          args: [message.payload.selector]
+        }).then(results => sendResponse({ status: 'success', data: results[0].result }))
+          .catch(err => sendResponse({ status: 'error', message: err.message }));
+      });
+      return true;
+
+    case 'AGENT_TYPE':
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        if (!tabs[0]) return sendResponse({ status: 'error', message: 'No active tab' });
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: (selector, text) => {
+            const el = document.querySelector(selector);
+            if (el) { 
+              el.focus();
+              el.value = text;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return { success: true }; 
+            }
+            return { success: false, error: 'Element not found' };
+          },
+          args: [message.payload.selector, message.payload.text]
+        }).then(results => sendResponse({ status: 'success', data: results[0].result }))
+          .catch(err => sendResponse({ status: 'error', message: err.message }));
+      });
+      return true;
+
+    case 'AGENT_GET_DOM':
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        if (!tabs[0]) return sendResponse({ status: 'error', message: 'No active tab' });
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: () => {
+            let elementsList = '';
+            const interactives = document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"]');
+            interactives.forEach((el, index) => {
+              if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+                let selector = el.id ? '#' + el.id : '';
+                if (!selector) {
+                   el.setAttribute('data-agent-id', `agent-${index}`);
+                   selector = `[data-agent-id="agent-${index}"]`;
+                }
+                const type = el.tagName.toLowerCase();
+                const text = (el.innerText || el.placeholder || el.value || el.name || el.title || '').replace(/\n/g, ' ').trim();
+                if (text) {
+                  elementsList += `[${type}] ${selector} - ${text.substring(0, 60)}\n`;
+                }
+              }
+            });
+            const textContent = document.body.innerText.substring(0, 3000);
+            return `Page URL: ${window.location.href}\n\nInteractive Elements:\n${elementsList.substring(0, 3000)}\n\nPage Text:\n${textContent}`;
+          }
+        }).then(results => sendResponse({ status: 'success', data: results[0].result }))
+          .catch(err => sendResponse({ status: 'error', message: err.message }));
+      });
+      return true;
+
+    case 'AGENT_SCROLL':
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        if (!tabs[0]) return sendResponse({ status: 'error', message: 'No active tab' });
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: (direction) => {
+            const amount = direction === 'up' ? -window.innerHeight : window.innerHeight;
+            window.scrollBy({ top: amount, left: 0, behavior: 'smooth' });
+            return true;
+          },
+          args: [message.payload.direction || 'down']
+        }).then(() => sendResponse({ status: 'success' }))
+          .catch(err => sendResponse({ status: 'error', message: err.message }));
+      });
+      return true;
+
+    case 'AGENT_WAIT':
+      setTimeout(() => {
+        sendResponse({ status: 'success' });
+      }, message.payload.time || 2000);
+      return true;
+
+    case 'AGENT_EXTRACT_DATA':
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        if (!tabs[0]) return sendResponse({ status: 'error', message: 'No active tab' });
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: (selector) => {
+            const el = document.querySelector(selector);
+            return el ? el.innerText : '';
+          },
+          args: [message.payload.selector]
+        }).then(results => sendResponse({ status: 'success', data: results[0].result }))
+          .catch(err => sendResponse({ status: 'error', message: err.message }));
+      });
+      return true;
+
     default:
       console.warn('[Background] Unknown action:', message.action);
       sendResponse({ status: 'error', message: `Unknown action: ${message.action}` });

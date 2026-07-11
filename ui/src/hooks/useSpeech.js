@@ -190,6 +190,7 @@ export function useSpeechRecognition() {
 
     onFinalResultRef.current = onFinalResult;
     accumulatedRef.current = '';
+    let errorOccurred = false;
     setTranscript('');
     setError(null);
 
@@ -232,32 +233,41 @@ export function useSpeechRecognition() {
     recognitionRef.current.onend = () => {
       clearSilenceTimer();
       setIsListening(false);
-      const finalText = accumulatedRef.current.trim();
-      if (finalText && onFinalResultRef.current) {
-        onFinalResultRef.current(finalText);
+      // Don't call onFinalResult if an error already handled the session
+      if (!errorOccurred) {
+        const finalText = accumulatedRef.current.trim();
+        if (finalText && onFinalResultRef.current) {
+          onFinalResultRef.current(finalText);
+        }
       }
       if (onEnd) onEnd();
     };
 
     recognitionRef.current.onerror = (event) => {
-      clearSilenceTimer();
-      setIsListening(false);
+      try {
+        clearSilenceTimer();
+        setIsListening(false);
 
-      // 'no-speech' is a normal timeout, not a real error
-      if (event.error === 'no-speech') {
-        if (onEnd) onEnd();
-        return;
+        // These are non-fatal: no-speech is a normal timeout, aborted fires on manual stop
+        if (event.error === 'no-speech' || event.error === 'aborted') {
+          if (onEnd) onEnd();
+          return;
+        }
+
+        errorOccurred = true;
+
+        const errMsg = {
+          'not-allowed':   'Microphone access was denied. Please allow microphone in browser settings.',
+          'audio-capture': 'No microphone found. Please connect a microphone.',
+          'network':       'Network error during speech recognition.',
+        }[event.error] || `Speech recognition error: ${event.error}`;
+
+        setError(errMsg);
+        if (onError) onError(new Error(errMsg));
+      } catch (handlerErr) {
+        // Prevent the onerror handler itself from crashing the extension
+        console.error('[useSpeechRecognition] Error inside onerror handler:', handlerErr);
       }
-
-      const errMsg = {
-        'not-allowed':    'Microphone access was denied. Please allow microphone in browser settings.',
-        'audio-capture':  'No microphone found. Please connect a microphone.',
-        'network':        'Network error during speech recognition.',
-        'aborted':        'Speech recognition was aborted.',
-      }[event.error] || `Speech recognition error: ${event.error}`;
-
-      setError(errMsg);
-      if (onError) onError(new Error(errMsg));
     };
 
     // ── Start ─────────────────────────────────────────────────────────────────

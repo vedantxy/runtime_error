@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { OpenAIAdapter } from './adapters/openai.js';
 import { GeminiAdapter } from './adapters/gemini.js';
 import { OllamaAdapter } from './adapters/ollama.js';
+import { NvidiaAdapter } from './adapters/nvidia.js';
 import { chunkText } from './lib/contentChunker.js';
 import { getSystemPrompt } from './lib/promptBuilder.js';
 import { createRequire } from 'module';
@@ -11,6 +12,37 @@ const require = createRequire(import.meta.url);
 const pdf = require('pdf-parse');
 
 dotenv.config();
+
+/**
+ * Strips all Markdown formatting from a text string so it reads
+ * naturally when spoken aloud by a TTS engine.
+ * Removes: headers, bold, italic, code fences, inline code,
+ * links, blockquotes, horizontal rules, and bullet/numbered lists.
+ */
+function stripMarkdown(text) {
+  if (!text) return text;
+  const BT = '\u0060'; // backtick, kept out of regex literals to avoid parse issues
+  const fenceRe   = new RegExp(BT + BT + BT + '[\\s\\S]*?' + BT + BT + BT, 'g');
+  const inlineRe  = new RegExp(BT + '[^' + BT + ']+' + BT, 'g');
+  return text
+    .replace(fenceRe,  '')                           // fenced code blocks
+    .replace(inlineRe, (m) => m.slice(1, -1))        // inline code -> plain text
+    .replace(/#{1,6}\s+/g, '')                       // ATX headings
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')           // bold+italic
+    .replace(/\*\*([^*]+)\*\*/g, '$1')               // bold
+    .replace(/\*([^*]+)\*/g, '$1')                   // italic
+    .replace(/___([^_]+)___/g, '$1')                 // bold+italic (underscore)
+    .replace(/__([^_]+)__/g, '$1')                   // bold (underscore)
+    .replace(/_([^_]+)_/g, '$1')                     // italic (underscore)
+    .replace(/~~([^~]+)~~/g, '$1')                   // strikethrough
+    .replace(/!?\[([^\]]+)\]\([^)]+\)/g, '$1')       // images / links -> keep label
+    .replace(/^\s*>+\s?/gm, '')                      // blockquotes
+    .replace(/^\s*[-*+]\s+/gm, '')                   // unordered list bullets
+    .replace(/^\s*\d+\.\s+/gm, '')                   // ordered list numbers
+    .replace(/^[-*_]{3,}$/gm, '')                    // horizontal rules
+    .replace(/\n{3,}/g, '\n\n')                      // collapse excess blank lines
+    .trim();
+}
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -32,6 +64,10 @@ switch (provider) {
     console.log('[Backend] Initializing Ollama (Local) LLM Provider.');
     llm = new OllamaAdapter();
     break;
+  case 'nvidia':
+    console.log('[Backend] Initializing NVIDIA LLM Provider.');
+    llm = new NvidiaAdapter();
+    break;
   case 'openai':
   default:
     console.log('[Backend] Initializing OpenAI LLM Provider.');
@@ -40,7 +76,7 @@ switch (provider) {
 }
 
 app.get('/api/health', (req, res) => {
-  const activeModel = provider === 'ollama' ? (process.env.OLLAMA_MODEL || 'llama3') : (provider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini');
+  const activeModel = provider === 'nvidia' ? 'nvidia/nemotron-3-ultra-550b-a55b' : (provider === 'ollama' ? (process.env.OLLAMA_MODEL || 'llama3') : (provider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini'));
   res.json({ status: 'ok', provider, model: activeModel, time: new Date().toISOString() });
 });
 
@@ -165,7 +201,7 @@ app.post('/api/query', async (req, res) => {
     });
 
     res.json({
-      text: result.text,
+      text: stripMarkdown(result.text),
       isInterpretation: result.isInterpretation,
       groundedInPage: hasContext
     });
@@ -210,7 +246,7 @@ app.post('/api/summarize', async (req, res) => {
         userQuery: 'Summarize the webpage context.'
       });
       return res.json({
-        text: result.text,
+        text: stripMarkdown(result.text),
         isInterpretation: result.isInterpretation,
         groundedInPage: true
       });
@@ -249,7 +285,7 @@ app.post('/api/summarize', async (req, res) => {
     });
 
     res.json({
-      text: reduceResult.text,
+      text: stripMarkdown(reduceResult.text),
       isInterpretation: reduceResult.isInterpretation,
       groundedInPage: true
     });
@@ -261,6 +297,77 @@ app.post('/api/summarize', async (req, res) => {
         message: err.message
       }
     });
+  }
+});
+
+// Autonomous Browser Agent Route
+app.post('/api/agent', async (req, res) => {
+  const { goal, domContext, history } = req.body;
+  
+const systemPrompt = `You are an Autonomous Browser Agent.
+Your goal is to navigate the web to fulfill the user's request.
+You will be provided with the current DOM context, which includes a list of "Interactive Elements" and their selectors.
+CRITICAL INSTRUCTIONS:
+1. You MUST use the exact selector provided in the "Interactive Elements" list when using AGENT_CLICK or AGENT_TYPE.
+2. If you are stuck in a loop, you MUST output a DONE or ERROR action.
+3. If you have successfully accomplished the user's goal (e.g. you navigated to the requested URL, or typed the requested text), you MUST output a DONE action immediately. Do not repeat the same action.
+4. You must output a JSON object with EXACTLY two fields:
+{
+  "thought": "Explain what you see, what you did previously, and what you plan to do next",
+  "action": {
+    "type": "AGENT_GOTO_URL" | "AGENT_CLICK" | "AGENT_TYPE" | "AGENT_GET_DOM" | "DONE" | "ERROR" | "AGENT_SCROLL" | "AGENT_WAIT" | "AGENT_EXTRACT_DATA",
+    "url": "https://example.com" (only if AGENT_GOTO_URL),
+    "selector": "#id or .class or [data-agent-id=...]" (only if AGENT_CLICK, AGENT_TYPE, or AGENT_EXTRACT_DATA),
+    "text": "text to type" (only if AGENT_TYPE),
+    "direction": "up or down" (only if AGENT_SCROLL),
+    "time": 2000 (milliseconds to wait, only if AGENT_WAIT),
+    "message": "final answer or error message" (only if DONE or ERROR)
+  }
+}
+Ensure your output is raw, strictly valid JSON. Do not wrap in markdown code blocks.`;
+
+  const prompt = `Goal: ${goal}\n\nCurrent DOM Context:\n${domContext ? domContext.substring(0, 5000) : 'None'}`;
+
+  try {
+    const result = await llm.complete({
+      systemPrompt,
+      pageContent: '',
+      history: history || [],
+      userQuery: prompt
+    });
+
+    let jsonStr = result.text.trim();
+    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1];
+    } else {
+      const start = jsonStr.indexOf('{');
+      const end = jsonStr.lastIndexOf('}');
+      if (start !== -1 && end !== -1) {
+        jsonStr = jsonStr.substring(start, end + 1);
+      }
+    }
+    
+    console.log('[Backend Agent] Pre-parsed JSON string:', jsonStr);
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr.trim());
+    } catch (parseErr) {
+      console.error('[Backend Agent] JSON Parse Error:', parseErr.message, 'Raw JSON string:', jsonStr);
+      parsed = {
+        thought: "Failed to parse JSON",
+        action: {
+          type: "ERROR",
+          message: `JSON Parse Error! Raw output: ${jsonStr.substring(0, 200)}...`
+        }
+      };
+    }
+    
+    res.json(parsed);
+  } catch (err) {
+    console.error('[Agent Route Error]:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

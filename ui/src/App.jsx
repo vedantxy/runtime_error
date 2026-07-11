@@ -731,6 +731,101 @@ function App() {
     if (intent === 'EXAMPLE') return 'Give an illustrative example of this topic.';
     return '';
   };
+  const runAgentLoop = async (goal) => {
+    const active = getActiveSession();
+    if (!active) return;
+    
+    active.messages.push({ role: 'user', content: `/agent ${goal}` });
+    const updated = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? active : s);
+    saveSessionsToStorage(updated, currentSessionIdRef.current);
+    
+    updateUIState('Thinking', 'Agent running...');
+    startTimer();
+    
+    let isDone = false;
+    let stepCount = 0;
+    
+    while (!isDone && stepCount < 10) {
+      stepCount++;
+      
+      const domResponse = await new Promise(resolve => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ action: 'AGENT_GET_DOM' }, resolve);
+        } else if (window.parent) {
+          const msgId = Date.now().toString();
+          const handler = (e) => {
+            if (e.data.type === 'AGENT_ACTION_RESPONSE' && e.data.messageId === msgId) {
+              window.removeEventListener('message', handler);
+              resolve(e.data.response);
+            }
+          };
+          window.addEventListener('message', handler);
+          window.parent.postMessage({ type: 'AGENT_ACTION', payload: { action: 'AGENT_GET_DOM' }, messageId: msgId }, '*');
+        } else {
+          resolve({ status: 'error' });
+        }
+      });
+      
+      const domContext = domResponse?.data || '';
+      
+      try {
+        const payload = { goal, domContext, history: active.messages.filter(m => m.role !== 'system') };
+        const res = await fetch('http://localhost:4000/api/agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        const agentData = await res.json();
+        
+        if (agentData.error) {
+           throw new Error(agentData.error);
+        }
+        
+        if (agentData.thought) {
+          active.messages.push({ role: 'assistant', content: `[Thought]: ${agentData.thought}` });
+        }
+        
+        const action = agentData.action || { type: 'ERROR', message: 'No action provided' };
+        
+        if (action.type === 'DONE' || action.type === 'ERROR') {
+          active.messages.push({ role: 'assistant', content: action.message || 'Done.' });
+          isDone = true;
+        } else {
+          active.messages.push({ role: 'assistant', content: `[Action]: ${action.type} ${JSON.stringify(action)}` });
+          
+          const actionResult = await new Promise(resolve => {
+             const actionPayload = { action: action.type, payload: action };
+             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+               chrome.runtime.sendMessage(actionPayload, resolve);
+             } else if (window.parent) {
+               const msgId = Date.now().toString();
+               const handler = (e) => {
+                 if (e.data.type === 'AGENT_ACTION_RESPONSE' && e.data.messageId === msgId) {
+                   window.removeEventListener('message', handler);
+                   resolve(e.data.response);
+                 }
+               };
+               window.addEventListener('message', handler);
+               window.parent.postMessage({ type: 'AGENT_ACTION', payload: actionPayload, messageId: msgId }, '*');
+             } else resolve({ status: 'error', message: 'No bridge available' });
+          });
+          active.messages.push({ role: 'system', content: `[Action Result]: ${JSON.stringify(actionResult)}` });
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        
+        const updated2 = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? active : s);
+        saveSessionsToStorage(updated2, currentSessionIdRef.current);
+      } catch (err) {
+        active.messages.push({ role: 'assistant', content: `[Agent Error]: ${err.message}` });
+        const updated2 = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? active : s);
+        saveSessionsToStorage(updated2, currentSessionIdRef.current);
+        isDone = true;
+      }
+    }
+    stopTimer();
+    updateUIState('Idle', 'Ready');
+  };
 
   // SEND MESSAGE (FREEFORM QA)
   const handleSend = (textToSend = '') => {
@@ -740,6 +835,12 @@ function App() {
 
     setInputText('');
     
+    if (query.startsWith('/agent ')) {
+      const goal = query.replace('/agent ', '').trim();
+      runAgentLoop(goal);
+      return;
+    }
+
     // Check if voice control intent
     const voiceIntent = classifyIntent(query);
     if (voiceIntent === Intents.PAUSE) { tts.pause(); return; }
@@ -856,28 +957,32 @@ function App() {
 
         // onError: show friendly message in chat
         (err) => {
-          console.error('[STT error]', err);
-          updateUIState('Idle', 'Ready');
-          
-          const isPermissionError = err.message.toLowerCase().includes('permission') || 
-                                    err.message.toLowerCase().includes('not-allowed') || 
-                                    err.message.toLowerCase().includes('allow') ||
-                                    err.message.toLowerCase().includes('denied');
-          
-          const activeS = getActiveSession();
-          if (activeS) {
-            let msgContent = `🎙️ Microphone error: ${err.message}`;
-            if (isPermissionError && typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) {
-              msgContent = `🎙️ MICROPHONE PERMISSION REQUIRED: Google Chrome blocks permission prompts inside popup side panels. \n\nI have automatically opened a permission tab for you. Please click "Allow" on the browser prompt there, then close that tab and return here!`;
-              chrome.tabs.create({ url: chrome.runtime.getURL("popup/index.html?request_mic=true") });
+          try {
+            console.error('[STT error]', err);
+            updateUIState('Idle', 'Ready');
+
+            const isPermissionError = err.message.toLowerCase().includes('permission') ||
+                                      err.message.toLowerCase().includes('not-allowed') ||
+                                      err.message.toLowerCase().includes('allow') ||
+                                      err.message.toLowerCase().includes('denied');
+
+            const activeS = getActiveSession();
+            if (activeS) {
+              let msgContent = `🎙️ Microphone error: ${err.message}`;
+              if (isPermissionError && typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) {
+                msgContent = `🎙️ MICROPHONE PERMISSION REQUIRED: Google Chrome blocks permission prompts inside popup side panels. \n\nI have automatically opened a permission tab for you. Please click "Allow" on the browser prompt there, then close that tab and return here!`;
+                chrome.tabs.create({ url: chrome.runtime.getURL("popup/index.html?request_mic=true") });
+              }
+
+              activeS.messages.push({
+                role: 'assistant',
+                content: msgContent
+              });
+              const updated = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? activeS : s);
+              saveSessionsToStorage(updated, currentSessionIdRef.current);
             }
-            
-            activeS.messages.push({
-              role: 'assistant',
-              content: msgContent
-            });
-            const updated = sessionsRef.current.map(s => s.id === currentSessionIdRef.current ? activeS : s);
-            saveSessionsToStorage(updated, currentSessionIdRef.current);
+          } catch (callbackErr) {
+            console.error('[STT onError callback] Unexpected error:', callbackErr);
           }
         }
       );
@@ -899,6 +1004,12 @@ function App() {
       window.parent.postMessage({ type: 'COMPANION_CLOSE' }, '*');
     } else {
       window.close();
+    }
+  };
+
+  const handleToggleFullscreen = () => {
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'TOGGLE_FULLSCREEN' }, '*');
     }
   };
 
@@ -1018,8 +1129,8 @@ function App() {
         <div className="mac-window" style={{ width: '100%', height: '100%', borderRadius: '12px' }}>
           <div className="mac-titlebar" onPointerDown={handleTitlebarPointerDown} style={{ cursor: 'move' }}>
             <div className="mac-titlebar-left">
-              <div className="mac-circle mac-red" onClick={handleClose}></div>
-              <div className="mac-circle mac-yellow"></div>
+              <div className="mac-circle mac-red" onClick={handleClose} title="Close"></div>
+              <div className="mac-circle mac-yellow" onClick={handleToggleFullscreen} style={{ cursor: 'pointer' }} title="Toggle Fullscreen"></div>
               <div className="mac-circle mac-green"></div>
             </div>
             <div className="mac-titlebar-center">AI Browser Companion</div>
@@ -1065,15 +1176,6 @@ function App() {
                 </div>
 
                 <div className="mac-section">
-                  <span className="mac-section-title">VOICE CONTROLS</span>
-                  <div className="mac-voice-controls">
-                    <button className="mac-ctrl-btn" onClick={tts.resume} title="Play / Resume">▶</button>
-                    <button className="mac-ctrl-btn" onClick={tts.pause} title="Pause">⏸</button>
-                    <button className="mac-ctrl-btn" onClick={tts.stop} title="Stop">⏹</button>
-                  </div>
-                </div>
-
-                <div className="mac-section">
                   <span className="mac-section-title">SPEAKER VOICE</span>
                   <div className="mac-select-wrapper">
                     <select 
@@ -1097,7 +1199,97 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mac-section" style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div className="mac-section db-sessions-list" style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  marginTop: '12px',
+                  overflowY: 'auto',
+                  flex: 1
+                }}>
+                  <span className="mac-section-title" style={{ padding: '0 4px 4px 4px' }}>PREVIOUS CHATS</span>
+                  {filteredSessions.length === 0 ? (
+                    <div style={{
+                      padding: '12px',
+                      textAlign: 'center',
+                      color: 'var(--text-muted)',
+                      fontSize: '11px',
+                      fontStyle: 'italic'
+                    }}>
+                      No chats found
+                    </div>
+                  ) : (
+                    filteredSessions.map(s => {
+                      const isActive = s.id === currentSessionId;
+                      const hasPage = !!s.pageContent;
+                      return (
+                        <div 
+                          key={s.id} 
+                          className={`db-session-item ${isActive ? 'active' : ''}`}
+                          onClick={() => handleSelectSession(s.id)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '8px 10px',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            background: isActive ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
+                            border: isActive ? '1px solid var(--accent-blue, #3b82f6)' : '1px solid transparent',
+                            transition: 'all 0.15s ease',
+                            position: 'relative',
+                            overflow: 'hidden',
+                            flexShrink: 0,
+                            minHeight: '46px'
+                          }}
+                        >
+                          <span style={{ fontSize: '13px' }}>{hasPage ? '🌐' : '💬'}</span>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', overflow: 'hidden', flex: 1, paddingRight: '12px' }}>
+                            <span style={{ 
+                              fontSize: '11px', 
+                              color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                              fontWeight: isActive ? 'bold' : 'normal',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis'
+                            }} title={s.title}>
+                              {s.title}
+                            </span>
+                            <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
+                              {new Date(s.id).toLocaleDateString()}
+                            </span>
+                          </div>
+                          <button 
+                            className="db-session-delete"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteSession(s.id);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--text-muted)',
+                              fontSize: '10px',
+                              cursor: 'pointer',
+                              padding: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              position: 'absolute',
+                              right: '6px'
+                            }}
+                            title="Delete Chat"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="mac-section" style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0 }}>
                   <button className="mac-new-chat-btn" onClick={handleNewChat} style={{
                     padding: '6px 12px',
                     borderRadius: '6px',
@@ -1157,7 +1349,8 @@ function App() {
             <div className="mac-chat-pane">
               <div className="mac-messages-container" ref={chatHistoryRef}>
                 {activeSession && activeSession.messages.length > 0 ? (
-                  activeSession.messages.map((msg, index) => {
+                  <>
+                    {activeSession.messages.map((msg, index) => {
                     if (index === 0 && activeSession.messages.length > 1 && msg.content.includes("MOMENTUM OS")) return null;
                     return (
                       <div key={index} className={`mac-msg-row ${msg.role}`}>
@@ -1175,8 +1368,18 @@ function App() {
                         </div>
                       </div>
                     );
-                  })
-                ) : (
+                  })}
+                  {uiState === 'Thinking' && (
+                    <div className="mac-msg-row assistant">
+                      <div className="mac-msg-bubble thinking-bubble">
+                        <span className="dot"></span>
+                        <span className="dot"></span>
+                        <span className="dot"></span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
                   <div className="mac-empty-state">
                     <div style={{ fontSize: '32px', marginBottom: '8px' }}>💬</div>
                     <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#333333' }}>Hello! I am your macOS browser assistant.</h3>
@@ -1206,7 +1409,18 @@ function App() {
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                 />
-                {stt.isSupported !== false && (
+                {tts.isPlaying ? (
+                  <button 
+                    className="mac-btn-mic"
+                    onClick={tts.stop}
+                    title="Stop speaking"
+                    style={{ color: 'var(--accent-red)' }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
+                    </svg>
+                  </button>
+                ) : stt.isSupported !== false ? (
                   <button 
                     className={`mac-btn-mic ${stt.isListening ? 'listening' : ''}`}
                     onClick={handleMicToggle}
@@ -1219,7 +1433,7 @@ function App() {
                       <rect x="17" y="9" width="2" height="6" rx="1" fill="currentColor"/>
                     </svg>
                   </button>
-                )}
+                ) : null}
                 <button className="mac-btn-send" onClick={handleSend}>
                   Send
                 </button>
@@ -1279,7 +1493,7 @@ function App() {
           <div className="mac-titlebar" onPointerDown={handleTitlebarPointerDown} style={{ cursor: 'move' }}>
             <div className="mac-titlebar-left">
               <div className="mac-circle mac-red" onClick={handleClose}></div>
-              <div className="mac-circle mac-yellow"></div>
+              <div className="mac-circle mac-yellow" onClick={handleToggleFullscreen} style={{ cursor: 'pointer' }} title="Toggle Fullscreen"></div>
               <div className="mac-circle mac-green"></div>
             </div>
             <div className="mac-titlebar-center">AI Browser Companion</div>
@@ -1388,7 +1602,9 @@ function App() {
                             border: isActive ? '1px solid var(--accent-orange)' : '1px solid transparent',
                             transition: 'all 0.15s ease',
                             position: 'relative',
-                            overflow: 'hidden'
+                            overflow: 'hidden',
+                            flexShrink: 0,
+                            minHeight: '46px'
                           }}
                         >
                           <span style={{ fontSize: '13px' }}>{hasPage ? '🌐' : '💬'}</span>
@@ -1408,6 +1624,7 @@ function App() {
                             </span>
                           </div>
                           <button 
+                            className="db-session-delete"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleDeleteSession(s.id);
@@ -1441,7 +1658,8 @@ function App() {
             <div className="mac-chat-pane">
               <div className="mac-messages-container" ref={chatHistoryRef}>
                 {activeSession && activeSession.messages.length > 0 ? (
-                  activeSession.messages.map((msg, index) => {
+                  <>
+                    {activeSession.messages.map((msg, index) => {
                     if (index === 0 && activeSession.messages.length > 1 && msg.content.includes("MOMENTUM OS")) return null;
                     return (
                       <div key={index} className={`mac-msg-row ${msg.role}`}>
@@ -1459,8 +1677,18 @@ function App() {
                         </div>
                       </div>
                     );
-                  })
-                ) : (
+                  })}
+                  {uiState === 'Thinking' && (
+                    <div className="mac-msg-row assistant">
+                      <div className="mac-msg-bubble thinking-bubble">
+                        <span className="dot"></span>
+                        <span className="dot"></span>
+                        <span className="dot"></span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
                   <div className="mac-empty-state">
                     <div style={{ fontSize: '32px', marginBottom: '8px' }}>💬</div>
                     <h3 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>Hello! I am your macOS browser assistant.</h3>
@@ -1490,7 +1718,18 @@ function App() {
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                 />
-                {stt.isSupported !== false && (
+                {tts.isPlaying ? (
+                  <button 
+                    className="mac-btn-mic"
+                    onClick={tts.stop}
+                    title="Stop speaking"
+                    style={{ color: 'var(--accent-red)' }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>
+                    </svg>
+                  </button>
+                ) : stt.isSupported !== false ? (
                   <button 
                     className={`mac-btn-mic ${stt.isListening ? 'listening' : ''}`}
                     onClick={handleMicToggle}
@@ -1503,7 +1742,7 @@ function App() {
                       <rect x="17" y="9" width="2" height="6" rx="1" fill="currentColor"/>
                     </svg>
                   </button>
-                )}
+                ) : null}
                 <button className="mac-btn-send" onClick={handleSend}>
                   Send
                 </button>
@@ -1541,14 +1780,6 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mac-section">
-                  <span className="mac-section-title">VOICE CONTROLS</span>
-                  <div className="mac-voice-controls">
-                    <button className="mac-ctrl-btn" onClick={tts.resume} title="Play / Resume">▶</button>
-                    <button className="mac-ctrl-btn" onClick={tts.pause} title="Pause">⏸</button>
-                    <button className="mac-ctrl-btn" onClick={tts.stop} title="Stop">⏹</button>
-                  </div>
-                </div>
 
                 <div className="mac-section">
                   <span className="mac-section-title">SPEAKER VOICE</span>
